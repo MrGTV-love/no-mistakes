@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.101.1](https://github.com/kunchenguid/no-mistakes/compare/v1.101.0...v1.101.1) (2026-10-25)
+
+
+### Bug Fixes
+
+* **pipeline:** stop early when skipping review prevents push ([#1606](https://github.com/kunchenguid/no-mistakes/issues/1606)) ([2f6b7a1](https://github.com/kunchenguid/no-mistakes/commit/2f6b7a13340db91367a35c8cd7f1915a1ff2f271))
+* **scm:** drop jobless cancelled workflow runs superseded by a later same-head run ([#1610](https://github.com/kunchenguid/no-mistakes/issues/1610)) ([dac5a6f](https://github.com/kunchenguid/no-mistakes/commit/dac5a6f74ad6918d948644c768408f96be98126d))
+
 ## [1.101.0](https://github.com/kunchenguid/no-mistakes/compare/v1.100.2...v1.101.0) (2026-10-25)
 
 
