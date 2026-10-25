@@ -572,3 +572,94 @@ func TestNormalizeFindingsAvoidsIDCollisions(t *testing.T) {
 		})
 	}
 }
+
+// TestRequiresUserActionScopeAndSeverityFloor pins the two rules that keep an
+// immaterial review note from parking a gate: an info finding never blocks, and
+// an expansion finding is follow-up work rather than a merge condition. Every
+// other ask-user finding keeps blocking.
+func TestRequiresUserActionScopeAndSeverityFloor(t *testing.T) {
+	cases := []struct {
+		name      string
+		finding   Finding
+		wantPark  bool
+		wantFix   bool
+		wantActed bool
+	}{
+		{
+			name:      "error intent ask-user blocks",
+			finding:   Finding{Severity: FindingSeverityError, Action: ActionAskUser},
+			wantPark:  true,
+			wantActed: true,
+		},
+		{
+			name:      "warning intent ask-user blocks",
+			finding:   Finding{Severity: FindingSeverityWarning, Action: ActionAskUser, Scope: FindingScopeIntent},
+			wantPark:  true,
+			wantActed: true,
+		},
+		{
+			name:     "error expansion ask-user is follow-up",
+			finding:  Finding{Severity: FindingSeverityError, Action: ActionAskUser, Scope: FindingScopeExpansion},
+			wantPark: false,
+		},
+		{
+			name:      "info intent ask-user still blocks",
+			finding:   Finding{Severity: FindingSeverityInfo, Action: ActionAskUser},
+			wantPark:  true,
+			wantActed: true,
+		},
+		{
+			name:      "auto-fix intent is fixed",
+			finding:   Finding{Severity: FindingSeverityWarning, Action: ActionAutoFix},
+			wantFix:   true,
+			wantActed: true,
+		},
+		{
+			name:    "auto-fix expansion is never fixed",
+			finding: Finding{Severity: FindingSeverityWarning, Action: ActionAutoFix, Scope: FindingScopeExpansion},
+			wantFix: false,
+		},
+		{
+			name:     "no-op is not actionable",
+			finding:  Finding{Severity: FindingSeverityError, Action: ActionNoOp},
+			wantPark: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			findings := Findings{Items: []Finding{tc.finding}}
+			if got := HasAskUserFindings(findings); got != tc.wantPark {
+				t.Fatalf("HasAskUserFindings = %v, want %v", got, tc.wantPark)
+			}
+			if got := len(AutoFixableFindings(findings).Items) > 0; got != tc.wantFix {
+				t.Fatalf("AutoFixableFindings present = %v, want %v", got, tc.wantFix)
+			}
+			if got := HasActionableFindings(findings); got != tc.wantActed {
+				t.Fatalf("HasActionableFindings = %v, want %v", got, tc.wantActed)
+			}
+		})
+	}
+}
+
+// TestFindingScopeJSONRoundTrip keeps the reviewer's scope classification on the
+// wire so a deferred finding stays deferred through the gate and the PR body.
+func TestFindingScopeJSONRoundTrip(t *testing.T) {
+	raw := `{"findings":[{"id":"r1","severity":"warning","description":"add a procedure","action":"ask-user","scope":"expansion"}]}`
+	parsed, err := ParseFindingsJSON(raw)
+	if err != nil {
+		t.Fatalf("ParseFindingsJSON: %v", err)
+	}
+	if len(parsed.Items) != 1 || parsed.Items[0].ScopeOrDefault() != FindingScopeExpansion {
+		t.Fatalf("scope = %+v, want expansion", parsed.Items)
+	}
+	if HasAskUserFindings(parsed) {
+		t.Fatal("an expansion finding must not park a gate")
+	}
+	encoded, err := json.Marshal(parsed)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"scope":"expansion"`) {
+		t.Fatalf("scope missing from encoded findings: %s", encoded)
+	}
+}

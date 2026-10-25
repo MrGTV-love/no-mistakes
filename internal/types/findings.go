@@ -22,6 +22,19 @@ const (
 	FindingSeverityInfo    = "info"
 )
 
+// Finding scope constants: whether a finding's smallest honest remedy corrects
+// the change's stated intent or extends it.
+//
+// An intent finding is a defect in what the change set out to do. An expansion
+// finding's remedy would add a guarantee, procedure, subsystem, or documentation
+// surface the intent does not require. Expansion findings are reported as
+// follow-up work: they never park a gate and never enter a fix round, because
+// acting on them is how an immaterial review note becomes a multi-round detour.
+const (
+	FindingScopeIntent    = "intent"
+	FindingScopeExpansion = "expansion"
+)
+
 // This package owns the finding severity and action vocabularies. Callers that
 // accept a severity or action from outside a pipeline agent - a hand-written
 // eval miss, an IPC payload - validate against these rather than keeping their
@@ -203,7 +216,11 @@ type Finding struct {
 	Action           string `json:"action"`
 	Source           string `json:"source,omitempty"`
 	UserInstructions string `json:"user_instructions,omitempty"`
-	ReviewScope      string `json:"review_scope,omitempty"`
+	// Scope classifies the remedy: "intent" (the default when empty) corrects
+	// what the change already set out to do, "expansion" would extend it. See
+	// the FindingScope constants and RequiresUserAction.
+	Scope       string `json:"scope,omitempty"`
+	ReviewScope string `json:"review_scope,omitempty"`
 	// Category separates the combined document+lint housekeeping pass's
 	// findings into their owning gates and the CI step's findings by kind
 	// (see the FindingCategoryCI* constants). Empty everywhere else.
@@ -280,6 +297,7 @@ type findingWire struct {
 	Action              string `json:"action"`
 	Source              string `json:"source,omitempty"`
 	UserInstructions    string `json:"user_instructions,omitempty"`
+	Scope               string `json:"scope,omitempty"`
 	ReviewScope         string `json:"review_scope,omitempty"`
 	Category            string `json:"category,omitempty"`
 	Check               string `json:"check,omitempty"`
@@ -487,9 +505,15 @@ func ExcludeFindings(findings Findings, ids []string) Findings {
 func AutoFixableFindings(findings Findings) Findings {
 	result := FindingsMetadata(findings)
 	for _, item := range findings.Items {
-		if item.ActionOrDefault() == ActionAutoFix {
-			result.Items = append(result.Items, item)
+		if item.ActionOrDefault() != ActionAutoFix {
+			continue
 		}
+		// An expansion finding is never fixed, whatever action it carries: the
+		// fix would build the extension the scope exists to defer.
+		if item.ScopeOrDefault() == FindingScopeExpansion {
+			continue
+		}
+		result.Items = append(result.Items, item)
 	}
 	return result
 }
@@ -545,9 +569,31 @@ func MergeUserOverrides(findings Findings, instructions map[string]string, added
 // defaults to ask-user) parks for a human, keeping this in agreement with
 // AutoFixableFindings: an unclassified finding is never auto-fixed and is
 // always caught here as ask-user.
+// ScopeOrDefault returns the finding's scope, treating an unset scope as the
+// intent scope so every finding produced before this field existed keeps its
+// previous blocking behavior.
+func (f Finding) ScopeOrDefault() string {
+	if strings.TrimSpace(f.Scope) == FindingScopeExpansion {
+		return FindingScopeExpansion
+	}
+	return FindingScopeIntent
+}
+
+// RequiresUserAction reports whether this finding must park its gate for the
+// user. Severity does not decide this: an ask-user finding parks whatever its
+// severity label, as it always has. The one exception is a finding whose scope
+// is "expansion" - its remedy extends beyond the change's intent, so it is
+// reported as follow-up work instead of blocking.
+func (f Finding) RequiresUserAction() bool {
+	if f.ActionOrDefault() != ActionAskUser {
+		return false
+	}
+	return f.ScopeOrDefault() != FindingScopeExpansion
+}
+
 func HasAskUserFindings(findings Findings) bool {
 	for _, item := range findings.Items {
-		if item.ActionOrDefault() == ActionAskUser {
+		if item.RequiresUserAction() {
 			return true
 		}
 	}
@@ -555,16 +601,21 @@ func HasAskUserFindings(findings Findings) bool {
 }
 
 // HasActionableFindings reports whether any finding warrants a fix - that is,
-// any finding whose effective action is not "no-op". Findings that are purely
-// informational ("no-op") are not actionable and need no fix, so a step whose
-// findings are all no-op (or that has no findings) returns false. This is what
-// yolo / auto-resolve uses to decide whether to fix a gate's findings or just
-// accept the step as-is.
+// any finding whose effective action is not "no-op" and whose scope is not
+// "expansion". Findings that are purely informational ("no-op") or that ask for
+// work beyond the change's intent (expansion) are not actionable, so a step
+// whose findings are all of those (or that has no findings) returns false. This
+// is what yolo / auto-resolve uses to decide whether to fix a gate's findings
+// or just accept the step as-is.
 func HasActionableFindings(findings Findings) bool {
 	for _, item := range findings.Items {
-		if item.ActionOrDefault() != ActionNoOp {
-			return true
+		if item.ActionOrDefault() == ActionNoOp {
+			continue
 		}
+		if item.ScopeOrDefault() == FindingScopeExpansion {
+			continue
+		}
+		return true
 	}
 	return false
 }
@@ -667,6 +718,7 @@ func (f *Finding) UnmarshalJSON(data []byte) error {
 	f.Action = wire.Action
 	f.Source = wire.Source
 	f.UserInstructions = wire.UserInstructions
+	f.Scope = wire.Scope
 	f.ReviewScope = wire.ReviewScope
 	f.Category = wire.Category
 	f.Check = wire.Check
